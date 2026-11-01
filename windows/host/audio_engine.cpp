@@ -71,6 +71,18 @@ public:
                        sources_.end());
     }
     int rate() const { return rate_.load(); }
+    bool set_endpoint(const std::string& endpoint_id) {
+        {
+            std::lock_guard<std::mutex> hold(route_lock_);
+            endpoint_id_ = endpoint_id;
+            ++route_generation_;
+        }
+        return true;
+    }
+    std::string endpoint() const {
+        std::lock_guard<std::mutex> hold(route_lock_);
+        return endpoint_id_;
+    }
 
 private:
     Mixer() {
@@ -92,18 +104,46 @@ private:
 
     void run() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        if (!run_device()) run_silent();
+        for (;;) {
+            if (!run_device()) {
+                // Keep streams alive while an endpoint is temporarily unavailable.
+                for (int i = 0; i < 10; ++i) {
+                    run_silent_once();
+                    Sleep(20);
+                }
+            }
+        }
     }
 
-    // The default render endpoint, shared mode, event driven.
+    // The selected render endpoint (or Windows default), shared mode, event driven.
     bool run_device() {
+        uint64_t generation;
+        std::string endpoint_id;
+        {
+            std::lock_guard<std::mutex> hold(route_lock_);
+            generation = route_generation_;
+            endpoint_id = endpoint_id_;
+        }
         Com<IMMDeviceEnumerator> enumerator;
         Com<IMMDevice> device;
         Com<IAudioClient> client;
         Com<IAudioRenderClient> render;
         WAVEFORMATEX* fmt = nullptr;
-        if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator))) ||
-            FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) ||
+        HRESULT device_hr = E_FAIL;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) {
+            if (endpoint_id.empty()) {
+                device_hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+            } else {
+                int wn = MultiByteToWideChar(CP_UTF8, 0, endpoint_id.c_str(), -1, nullptr, 0);
+                std::wstring wid(wn > 0 ? static_cast<size_t>(wn) : 0, L'\0');
+                if (wn > 1) {
+                    MultiByteToWideChar(CP_UTF8, 0, endpoint_id.c_str(), -1, wid.data(), wn);
+                    wid.resize(static_cast<size_t>(wn - 1));
+                }
+                if (!wid.empty()) device_hr = enumerator->GetDevice(wid.c_str(), &device);
+            }
+        }
+        if (FAILED(device_hr) ||
             FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&client))) ||
             FAILED(client->GetMixFormat(&fmt))) {
             return false;
@@ -130,6 +170,14 @@ private:
         std::vector<float> mixbuf;
         for (;;) {
             WaitForSingleObject(ready, 200);
+            {
+                std::lock_guard<std::mutex> hold(route_lock_);
+                if (generation != route_generation_) {
+                    client->Stop();
+                    CloseHandle(ready);
+                    return true;
+                }
+            }
             UINT32 padding = 0;
             if (FAILED(client->GetCurrentPadding(&padding))) break;  // device gone
             const UINT32 frames = buffer_frames - padding;
@@ -156,28 +204,30 @@ private:
         return false;  // the device went away: keep time silently from here on
     }
 
-    // No device: consume audio at real time, discarding it.
-    void run_silent() {
+    // No device: consume a short slice, then retry opening the requested endpoint.
+    void run_silent_once() {
         if (rate_.load() <= 0) rate_ = 48000;
-        std::vector<float> mixbuf;
-        int64_t last = nano_time();
-        for (;;) {
-            Sleep(10);
-            const int64_t now = nano_time();
-            const size_t frames = static_cast<size_t>((now - last) * rate_.load() / 1000000000LL);
-            if (frames == 0) continue;
-            last += static_cast<int64_t>(frames) * 1000000000LL / rate_.load();
-            mixbuf.resize(frames * 2);
-            mix(mixbuf.data(), frames);
-        }
+        std::vector<float> mixbuf(static_cast<size_t>(rate_.load() / 50) * 2);
+        mix(mixbuf.data(), mixbuf.size() / 2);
     }
 
     std::mutex lock_;
     std::vector<std::shared_ptr<Source>> sources_;
     std::atomic<int> rate_{48000};
+    mutable std::mutex route_lock_;
+    std::string endpoint_id_;
+    uint64_t route_generation_ = 0;
 };
 
 }  // namespace
+
+bool set_output_endpoint(const std::string& endpoint_id) {
+    return Mixer::get().set_endpoint(endpoint_id);
+}
+
+std::string output_endpoint() {
+    return Mixer::get().endpoint();
+}
 
 // ---- AudioTrack streams ------------------------------------------------------------------
 class Stream final : public Source {

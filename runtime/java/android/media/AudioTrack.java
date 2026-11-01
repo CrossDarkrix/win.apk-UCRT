@@ -1056,8 +1056,13 @@ public class AudioTrack implements AudioRouting, VolumeAutomation {
      *  output here, so a request naming it succeeds, a request for anything else
      *  cannot be honoured, and null ("no preference") always succeeds. */
     @Override public boolean setPreferredDevice(AudioDeviceInfo deviceInfo) {
-        if (deviceInfo == null) { mPreferredDevice = null; return true; }
-        if (!deviceInfo.isSink()) return false;
+        if (deviceInfo != null && !deviceInfo.isSink()) return false;
+        String endpointId = deviceInfo == null ? null : deviceInfo.getAddress();
+        if (deviceInfo != null && (endpointId == null || endpointId.length() == 0)) return false;
+        boolean applied;
+        try { applied = com.macapk.loader.NativeAudio.nativeSetAudioOutputDevice(endpointId); }
+        catch (Throwable ignored) { applied = false; }
+        if (!applied) return false;
         mPreferredDevice = deviceInfo;
         return true;
     }
@@ -1065,7 +1070,8 @@ public class AudioTrack implements AudioRouting, VolumeAutomation {
     /** AOSP: the device audio is ACTUALLY going to while the track is
      *  initialized, null otherwise. Ours is the single CoreAudio output. */
     @Override public AudioDeviceInfo getRoutedDevice() {
-        return (getState() == STATE_UNINITIALIZED) ? null : new AudioDeviceInfo();
+        if (getState() == STATE_UNINITIALIZED) return null;
+        return mPreferredDevice != null ? mPreferredDevice : new AudioDeviceInfo();
     }
 
     // ---- VolumeAutomation ------------------------------------------------

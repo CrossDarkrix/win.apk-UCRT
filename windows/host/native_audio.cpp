@@ -9,6 +9,12 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <string>
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <propvarutil.h>
 
 #include "audio_engine.h"
 
@@ -46,6 +52,129 @@ std::shared_ptr<au::Voice> voice(jint id) {
     std::lock_guard<std::mutex> hold(g_lock);
     auto it = g_voices.find(id);
     return it == g_voices.end() ? nullptr : it->second;
+}
+
+std::string utf8_from_wide(const wchar_t* value) {
+    if (!value || !*value) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1,
+                                      nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+
+    // n includes the trailing NUL. The previous implementation allocated n - 1
+    // bytes but asked WideCharToMultiByte() to write n bytes. That one-byte
+    // overwrite corrupted endpoint records before they reached AudioManager,
+    // so device-picker UIs could end up with only their synthetic "Automatic"
+    // row. Allocate the complete Windows result, then remove the terminator.
+    std::string out(static_cast<size_t>(n), '\0');
+    const int written = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value, -1,
+                                             out.data(), n, nullptr, nullptr);
+    if (written != n) return {};
+    out.resize(static_cast<size_t>(n - 1));
+    return out;
+}
+
+jobjectArray JNICALL Audio_getOutputDevices(JNIEnv* env, jclass) {
+    jclass string_class = env->FindClass("java/lang/String");
+    if (!string_class) return nullptr;
+    std::vector<std::string> records;
+    HRESULT ci = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninit = SUCCEEDED(ci);
+    IMMDeviceEnumerator* enumerator = nullptr;
+    IMMDeviceCollection* collection = nullptr;
+    IMMDevice* default_device = nullptr;
+    LPWSTR default_id_w = nullptr;
+    std::string default_id;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                   IID_PPV_ARGS(&enumerator)))) {
+        if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &default_device)) &&
+            SUCCEEDED(default_device->GetId(&default_id_w))) {
+            default_id = utf8_from_wide(default_id_w);
+        }
+        if (SUCCEEDED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection))) {
+            UINT count = 0;
+            if (SUCCEEDED(collection->GetCount(&count))) {
+                for (UINT i = 0; i < count; ++i) {
+                    IMMDevice* device = nullptr;
+                    IPropertyStore* props = nullptr;
+                    IAudioClient* client = nullptr;
+                    LPWSTR id_w = nullptr;
+                    PROPVARIANT name_value;
+                    PropVariantInit(&name_value);
+                    WAVEFORMATEX* format = nullptr;
+                    if (SUCCEEDED(collection->Item(i, &device)) &&
+                        SUCCEEDED(device->GetId(&id_w))) {
+                        std::string id = utf8_from_wide(id_w);
+                        std::string name = id;
+                        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &props)) &&
+                            SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &name_value)) &&
+                            name_value.vt == VT_LPWSTR && name_value.pwszVal) {
+                            name = utf8_from_wide(name_value.pwszVal);
+                        }
+                        int rate = 0, channels = 0;
+                        if (SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                                     reinterpret_cast<void**>(&client))) &&
+                            SUCCEEDED(client->GetMixFormat(&format)) && format) {
+                            rate = static_cast<int>(format->nSamplesPerSec);
+                            channels = static_cast<int>(format->nChannels);
+                        }
+                        records.push_back(id + "\x1f" + name + "\x1f" +
+                                          (id == default_id ? "1" : "0") + "\x1f" +
+                                          std::to_string(rate) + "\x1f" + std::to_string(channels));
+                    }
+                    if (format) CoTaskMemFree(format);
+                    if (client) client->Release();
+                    PropVariantClear(&name_value);
+                    if (props) props->Release();
+                    if (id_w) CoTaskMemFree(id_w);
+                    if (device) device->Release();
+                }
+            }
+        }
+    }
+    if (default_id_w) CoTaskMemFree(default_id_w);
+    if (default_device) default_device->Release();
+    if (collection) collection->Release();
+    if (enumerator) enumerator->Release();
+    if (uninit) CoUninitialize();
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(records.size()), string_class, nullptr);
+    if (!result) return nullptr;
+    for (jsize i = 0; i < static_cast<jsize>(records.size()); ++i) {
+        jstring item = env->NewStringUTF(records[static_cast<size_t>(i)].c_str());
+        if (!item) return result;
+        env->SetObjectArrayElement(result, i, item);
+        env->DeleteLocalRef(item);
+    }
+    return result;
+}
+
+jboolean JNICALL Audio_setOutputDevice(JNIEnv* env, jclass, jstring endpoint) {
+    std::string id;
+    if (endpoint) {
+        const char* chars = env->GetStringUTFChars(endpoint, nullptr);
+        if (!chars) return JNI_FALSE;
+        id = chars;
+        env->ReleaseStringUTFChars(endpoint, chars);
+        if (id.empty()) return JNI_FALSE;
+        HRESULT ci = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool uninit = SUCCEEDED(ci);
+        IMMDeviceEnumerator* enumerator = nullptr;
+        IMMDevice* device = nullptr;
+        int wn = MultiByteToWideChar(CP_UTF8, 0, id.c_str(), -1, nullptr, 0);
+        std::wstring wid(wn > 0 ? static_cast<size_t>(wn) : 0, L'\0');
+        if (wn > 1) {
+            MultiByteToWideChar(CP_UTF8, 0, id.c_str(), -1, wid.data(), wn);
+            wid.resize(static_cast<size_t>(wn - 1));
+        }
+        bool valid = !wid.empty() &&
+            SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                       IID_PPV_ARGS(&enumerator))) &&
+            SUCCEEDED(enumerator->GetDevice(wid.c_str(), &device));
+        if (device) device->Release();
+        if (enumerator) enumerator->Release();
+        if (uninit) CoUninitialize();
+        if (!valid) return JNI_FALSE;
+    }
+    return au::set_output_endpoint(id) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ---- AudioTrack ---------------------------------------------------------------------
@@ -394,6 +523,8 @@ const HostMethod kMethods[] = {
     WINAPK_HOST_NATIVE(kCls, "nativeMpPosition", "(J)I", Mp_position),
     WINAPK_HOST_NATIVE(kCls, "nativeMpIsPlaying", "(J)Z", Mp_isPlaying),
     WINAPK_HOST_NATIVE(kCls, "nativeMpRelease", "(J)V", Mp_release),
+    WINAPK_HOST_NATIVE(kCls, "nativeGetAudioOutputDevices", "()[Ljava/lang/String;", Audio_getOutputDevices),
+    WINAPK_HOST_NATIVE(kCls, "nativeSetAudioOutputDevice", "(Ljava/lang/String;)Z", Audio_setOutputDevice),
 };
 
 }  // namespace

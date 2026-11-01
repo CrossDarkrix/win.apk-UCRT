@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <string>
 
 namespace winapk::audio {
 
@@ -54,6 +55,10 @@ bool stream_timestamp(Stream* s, int64_t* frames, int64_t* nanos);
 // here: a resampler, no time stretcher).
 bool stream_set_rate(Stream* s, int hz);
 int stream_rate(Stream* s);
+// Selects the process-wide WASAPI render endpoint. Empty selects the Windows default.
+// Returns only after the endpoint ID has been validated by MMDevice.
+bool set_output_endpoint(const std::string& endpoint_id);
+std::string output_endpoint();
 void stream_set_params(Stream* s, float speed, float pitch);
 void stream_params(Stream* s, float* speed, float* pitch);
 

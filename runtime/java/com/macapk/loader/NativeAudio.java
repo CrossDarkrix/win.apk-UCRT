@@ -112,4 +112,9 @@ public final class NativeAudio {
     public static native int  nativeMpPosition(long h);
     public static native boolean nativeMpIsPlaying(long h);
     public static native void nativeMpRelease(long h);
+
+    // Windows Phase 1: active render endpoints as records:
+    // endpointId \u001f friendlyName \u001f isDefault \u001f sampleRate \u001f channels.
+    public static native String[] nativeGetAudioOutputDevices();
+    public static native boolean nativeSetAudioOutputDevice(String endpointId);
 }

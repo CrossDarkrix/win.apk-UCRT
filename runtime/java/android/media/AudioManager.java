@@ -96,9 +96,66 @@ public class AudioManager {
      * AudioRecord.getRoutedDevice() consequently answers with the real capture
      * device while recording instead of null.
      */
+    private static boolean containsAny(String value, String... needles) {
+        if (value == null) return false;
+        for (String needle : needles) {
+            if (needle != null && value.contains(needle)) return true;
+        }
+        return false;
+    }
+
     public AudioDeviceInfo[] getDevices(int flags) {
-        java.util.ArrayList<AudioDeviceInfo> out = new java.util.ArrayList<>(2);
-        if ((flags & GET_DEVICES_OUTPUTS) != 0) out.add(AudioDeviceInfo.defaultOutput());
+        java.util.ArrayList<AudioDeviceInfo> out = new java.util.ArrayList<>();
+        if ((flags & GET_DEVICES_OUTPUTS) != 0) {
+            String[] records = null;
+            try { records = com.macapk.loader.NativeAudio.nativeGetAudioOutputDevices(); }
+            catch (Throwable ignored) { }
+            if (records != null) {
+                for (String record : records) {
+                    if (record == null) continue;
+                    String[] p = record.split("\u001f", -1);
+                    if (p.length != 5) continue;
+                    try {
+                        String address = p[0];
+                        String name = p[1];
+                        boolean isDefault = "1".equals(p[2]);
+                        int rate = Integer.parseInt(p[3]);
+                        int channels = Integer.parseInt(p[4]);
+                        String lower = (address + " " + name).toLowerCase(java.util.Locale.ROOT);
+                        // Do not expose software-only endpoints in the physical output picker.
+                        if (containsAny(lower,
+                                "steam streaming", "vb-audio", "virtual cable",
+                                "cable input", "cable output", "voicemeeter", "virtual audio")) {
+                            continue;
+                        }
+                        int type;
+                        if (containsAny(lower, "usb", "usbaudio", "usb audio")) {
+                            type = containsAny(lower, "headset", "headphone", "ヘッドセット", "ヘッドホン")
+                                    ? AudioDeviceInfo.TYPE_USB_HEADSET
+                                    : AudioDeviceInfo.TYPE_USB_DEVICE;
+                        } else if (containsAny(lower, "bluetooth", "bthenum", "bthhf", "ブルートゥース")) {
+                            type = AudioDeviceInfo.TYPE_BLUETOOTH_A2DP;
+                        } else if (containsAny(lower, "hdmi", "displayport", "display audio", "ディスプレイ オーディオ")) {
+                            type = AudioDeviceInfo.TYPE_HDMI;
+                        } else if (containsAny(lower,
+                                "digital output", "s/pdif", "spdif", "デジタル出力")) {
+                            type = AudioDeviceInfo.TYPE_LINE_DIGITAL;
+                        } else if (containsAny(lower, "headphone", "headset", "ヘッドホン", "ヘッドセット", "イヤホン")) {
+                            type = AudioDeviceInfo.TYPE_WIRED_HEADPHONES;
+                        } else {
+                            // Physical Windows speakers are intentionally surfaced as speakers
+                            // because the target picker filters out generic TYPE_BUS devices.
+                            type = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER;
+                        }
+                        int id = address.hashCode() & 0x7fffffff;
+                        if (id < 3) id += 3;
+                        if (isDefault) id |= 0x40000000;
+                        out.add(AudioDeviceInfo.hostOutput(type, id, name, address, rate, channels));
+                    } catch (RuntimeException ignored) { }
+                }
+            }
+            if (out.isEmpty()) out.add(AudioDeviceInfo.defaultOutput());
+        }
         if ((flags & GET_DEVICES_INPUTS) != 0) out.add(AudioDeviceInfo.defaultInput());
         return out.toArray(new AudioDeviceInfo[0]);
     }
