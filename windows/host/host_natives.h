@@ -40,6 +40,7 @@ HostMethods native_os_methods();     // native_os.cpp
 HostMethods native_image_methods();  // native_image.cpp
 HostMethods native_looper_methods(); // native_looper.cpp
 HostMethods native_audio_methods();  // native_audio.cpp
+HostMethods native_media_methods();  // gstreamer_mediaextractor_pcm.cpp
 HostMethods native_clipboard_methods(); // native_clipboard.cpp
 HostMethods native_wallpaper_methods(); // native_wallpaper.cpp
 HostMethods native_picker_methods();    // native_picker.cpp

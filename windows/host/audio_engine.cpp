@@ -188,19 +188,35 @@ public:
 
     bool mix(float* out, size_t frames, int out_rate) override {
         std::lock_guard<std::mutex> hold(lock_);
+        last_mix_nanos_ = nano_time();
         if (state_ != kPlaying && !draining_) return true;
         const double step = rate_ * speed_ / out_rate;
         size_t rendered = 0;
         for (; rendered < frames; ++rendered) {
             const size_t have = buf_.size() / 2;
             const size_t i = static_cast<size_t>(cursor_);
-            if (i + 1 >= have) break;  // underrun
-            const double t = cursor_ - static_cast<double>(i);
-            for (int c = 0; c < 2; ++c) {
-                const float a = buf_[i * 2 + c], b = buf_[(i + 1) * 2 + c];
-                out[rendered * 2 + c] += static_cast<float>(a + (b - a) * t) * (c == 0 ? left_ : right_);
+            if (i >= have) break;  // underrun: no complete input frame remains
+            if (i + 1 < have) {
+                const double t = cursor_ - static_cast<double>(i);
+                for (int c = 0; c < 2; ++c) {
+                    const float a = buf_[i * 2 + c], b = buf_[(i + 1) * 2 + c];
+                    out[rendered * 2 + c] += static_cast<float>(a + (b - a) * t) *
+                                                   (c == 0 ? left_ : right_);
+                }
+                cursor_ += step;
+            } else {
+                // Linear interpolation normally needs a look-ahead frame. At
+                // end-of-stream there is no next frame, and the previous code
+                // left this final complete frame queued forever. AudioTrack's
+                // playback head then remained one frame behind framesWritten,
+                // so clients waiting for exact drain completion never reached
+                // their repeat/next-track transition. Render the final frame
+                // directly and consume it. The same rule is safe on a genuine
+                // streaming underrun: the frame is already due for playback.
+                out[rendered * 2] += buf_[i * 2] * left_;
+                out[rendered * 2 + 1] += buf_[i * 2 + 1] * right_;
+                cursor_ = static_cast<double>(have);
             }
-            cursor_ += step;
         }
         const size_t used = std::min(static_cast<size_t>(cursor_), buf_.size() / 2);
         if (used) {
@@ -224,12 +240,39 @@ public:
         size_t done = 0;
         std::unique_lock<std::mutex> hold(lock_);
         while (done < whole) {
-            const size_t free_frames = capacity_ > buf_.size() / 2 ? capacity_ - buf_.size() / 2 : 0;
+            size_t free_frames = capacity_ > buf_.size() / 2 ? capacity_ - buf_.size() / 2 : 0;
+            if (free_frames == 0 && state_ == kPlaying) {
+                // A healthy host mixer visits mix() continuously. If the WASAPI
+                // render path stops visiting us while this MODE_STREAM ring is
+                // full, non-blocking Android writers otherwise receive zero
+                // forever and can never reach EOS. Advance the already queued
+                // audio in real time, exactly like the no-device silent clock,
+                // until the host mixer resumes. A 500 ms guard prevents normal
+                // scheduling jitter from discarding queued audio.
+                const int64_t now = nano_time();
+                if (last_mix_nanos_ > 0 && now - last_mix_nanos_ >= 500000000LL) {
+                    const int64_t elapsed = now - recovery_nanos_;
+                    const size_t queued = buf_.size() / 2;
+                    const size_t due = elapsed > 0
+                        ? static_cast<size_t>(elapsed * rate_ / 1000000000LL)
+                        : 0;
+                    const size_t drop = std::min(queued, std::max<size_t>(due, 1));
+                    if (drop) {
+                        buf_.erase(buf_.begin(), buf_.begin() + static_cast<ptrdiff_t>(drop * 2));
+                        cursor_ = 0;
+                        played_ += static_cast<int64_t>(drop);
+                        last_nanos_ = now;
+                        recovery_nanos_ = now;
+                        room_.notify_all();
+                        free_frames = capacity_ - buf_.size() / 2;
+                    }
+                }
+            }
             if (free_frames == 0) {
                 // Only a playing track drains; a blocking write to one that is
                 // not (pre-filling before play) takes what fits, as AOSP's does.
                 if (!blocking || state_ != kPlaying) break;
-                room_.wait(hold);
+                room_.wait_for(hold, std::chrono::milliseconds(100));
                 continue;
             }
             const size_t take = std::min(free_frames, (whole - done) / channels_);
@@ -256,6 +299,8 @@ public:
         std::lock_guard<std::mutex> hold(lock_);
         state_ = kPlaying;
         draining_ = false;
+        recovery_nanos_ = nano_time();
+        if (last_mix_nanos_ == 0) last_mix_nanos_ = recovery_nanos_;
         room_.notify_all();
     }
     void pause() {
@@ -268,6 +313,7 @@ public:
         draining_ = state_ == kPlaying && !buf_.empty();
         state_ = kStopped;
         played_ = 0;
+        recovery_nanos_ = nano_time();
         has_timestamp_reset();
         room_.notify_all();
     }
@@ -278,6 +324,7 @@ public:
         cursor_ = 0;
         draining_ = false;
         played_ = 0;
+        recovery_nanos_ = nano_time();
         has_timestamp_reset();
         room_.notify_all();
     }
@@ -343,6 +390,7 @@ private:
     bool draining_ = false;
     float left_ = 1, right_ = 1, speed_ = 1, pitch_ = 1;
     int64_t played_ = 0, last_nanos_ = 0, reset_nanos_ = 0;
+    int64_t last_mix_nanos_ = 0, recovery_nanos_ = 0;
 };
 
 std::shared_ptr<Stream> stream_create(int rate, int channels, int, int buffer_frames) {
