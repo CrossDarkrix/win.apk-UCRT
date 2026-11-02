@@ -147,6 +147,19 @@ jobjectArray JNICALL Audio_getOutputDevices(JNIEnv* env, jclass) {
     return result;
 }
 
+void JNICALL Audio_setSessionVolume(JNIEnv*, jclass, jfloat value) {
+    au::set_session_volume(value);
+}
+jfloat JNICALL Audio_getSessionVolume(JNIEnv*, jclass) {
+    return au::session_volume();
+}
+void JNICALL Audio_setSessionMute(JNIEnv*, jclass, jboolean muted) {
+    au::set_session_mute(muted == JNI_TRUE);
+}
+jboolean JNICALL Audio_getSessionMute(JNIEnv*, jclass) {
+    return au::session_mute() ? JNI_TRUE : JNI_FALSE;
+}
+
 jboolean JNICALL Audio_setOutputDevice(JNIEnv* env, jclass, jstring endpoint) {
     std::string id;
     if (endpoint) {
@@ -525,6 +538,10 @@ const HostMethod kMethods[] = {
     WINAPK_HOST_NATIVE(kCls, "nativeMpRelease", "(J)V", Mp_release),
     WINAPK_HOST_NATIVE(kCls, "nativeGetAudioOutputDevices", "()[Ljava/lang/String;", Audio_getOutputDevices),
     WINAPK_HOST_NATIVE(kCls, "nativeSetAudioOutputDevice", "(Ljava/lang/String;)Z", Audio_setOutputDevice),
+    WINAPK_HOST_NATIVE(kCls, "nativeSetSessionVolume", "(F)V", Audio_setSessionVolume),
+    WINAPK_HOST_NATIVE(kCls, "nativeGetSessionVolume", "()F", Audio_getSessionVolume),
+    WINAPK_HOST_NATIVE(kCls, "nativeSetSessionMute", "(Z)V", Audio_setSessionMute),
+    WINAPK_HOST_NATIVE(kCls, "nativeGetSessionMute", "()Z", Audio_getSessionMute),
 };
 
 }  // namespace

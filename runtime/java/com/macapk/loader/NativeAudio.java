@@ -117,4 +117,8 @@ public final class NativeAudio {
     // endpointId \u001f friendlyName \u001f isDefault \u001f sampleRate \u001f channels.
     public static native String[] nativeGetAudioOutputDevices();
     public static native boolean nativeSetAudioOutputDevice(String endpointId);
+    public static native void nativeSetSessionVolume(float volume);
+    public static native float nativeGetSessionVolume();
+    public static native void nativeSetSessionMute(boolean muted);
+    public static native boolean nativeGetSessionMute();
 }

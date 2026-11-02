@@ -2,6 +2,7 @@
 // Exposes decoded S16LE PCM blocks through MediaExtractor and uses the existing
 // MediaCodec audio JNI surface as a strict PCM pass-through.
 #include "host_natives.h"
+#include "gstreamer_startup.h"
 #include <jni.h>
 #include <cstdint>
 #include <cstring>
@@ -95,7 +96,7 @@ static void collect_stream_tags(GstDiscovererInfo* info, GstTagList*& tags, Meta
 
 static Metadata* discover_metadata(const char* path) {
     if (!path || !*path) return nullptr;
-    gst_init(nullptr, nullptr);
+    winapk::gstreamer_startup::ensure_initialized();
     GError* error = nullptr;
     gchar* uri = gst_filename_to_uri(path, &error);
     if (!uri) {
@@ -160,7 +161,7 @@ struct Mp3FrameInfo { int sample_rate=0; int samples=0; int frame_bytes=0; };
 bool mp3_frame_info(const unsigned char*h,Mp3FrameInfo*out){if(!h||!out||h[0]!=0xff||(h[1]&0xe0)!=0xe0)return false;int version=(h[1]>>3)&3,layer=(h[1]>>1)&3,bitrate_index=(h[2]>>4)&15,sample_index=(h[2]>>2)&3,padding=(h[2]>>1)&1;if(version==1||layer!=1||bitrate_index==0||bitrate_index==15||sample_index==3)return false;static const int sr[3]={44100,48000,32000};static const int br1[16]={0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};static const int br2[16]={0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0};int rate=sr[sample_index];if(version==2)rate/=2;else if(version==0)rate/=4;int kbps=version==3?br1[bitrate_index]:br2[bitrate_index];int samples=version==3?1152:576;int bytes=((version==3?144000:72000)*kbps)/rate+padding;if(rate<=0||bytes<24)return false;out->sample_rate=rate;out->samples=samples;out->frame_bytes=bytes;return true;}
 int64_t mp3_duration_fallback(const char*path){if(!path||!*path)return -1;std::ifstream f(path,std::ios::binary|std::ios::ate);if(!f)return -1;std::streamoff end=f.tellg();if(end<4)return -1;uintmax_t file_size=(uintmax_t)end;if(file_size>(uintmax_t)std::numeric_limits<size_t>::max()||file_size>(uintmax_t)std::numeric_limits<std::streamsize>::max())return -1;size_t size=(size_t)file_size;std::vector<unsigned char>data(size);f.seekg(0,std::ios::beg);if(!f.read((char*)data.data(),(std::streamsize)size))return -1;size_t pos=0,limit=data.size();if(limit>=10&&std::memcmp(data.data(),"ID3",3)==0){size_t tag=((size_t)(data[6]&0x7f)<<21)|((size_t)(data[7]&0x7f)<<14)|((size_t)(data[8]&0x7f)<<7)|(size_t)(data[9]&0x7f);size_t skip=10+tag+((data[5]&0x10)?10:0);if(skip<limit)pos=skip;}if(limit>=128&&std::memcmp(data.data()+limit-128,"TAG",3)==0)limit-=128;int64_t duration=0;uint64_t frames=0;while(pos+4<=limit){Mp3FrameInfo fi;if(!mp3_frame_info(data.data()+pos,&fi)||pos+(size_t)fi.frame_bytes>limit){++pos;continue;}size_t next=pos+(size_t)fi.frame_bytes;if(next+4<=limit){Mp3FrameInfo ni;if(!mp3_frame_info(data.data()+next,&ni)){++pos;continue;}}duration+=(int64_t)fi.samples*1000000LL/fi.sample_rate;++frames;pos=next;}return frames>=2&&duration>0?duration:-1;}
 std::once_flag once;
-void init(){std::call_once(once,[]{gst_init(nullptr,nullptr);});}
+void init(){winapk::gstreamer_startup::ensure_initialized();}
 void clear(Demux*d){if(d->current)gst_sample_unref(d->current);d->current=nullptr;d->pts_us=-1;}
 bool check_bus(Demux*d){GstBus*b=gst_element_get_bus(d->pipeline);GstMessage*m=gst_bus_pop_filtered(b,(GstMessageType)(GST_MESSAGE_ERROR|GST_MESSAGE_EOS));gst_object_unref(b);if(!m)return false;if(GST_MESSAGE_TYPE(m)==GST_MESSAGE_ERROR){GError*e=nullptr;gchar*dbg=nullptr;gst_message_parse_error(m,&e,&dbg);d->error=e?e->message:"GStreamer error";if(e)g_error_free(e);g_free(dbg);}else d->eos=true;gst_message_unref(m);return true;}
 bool pull(Demux*d){clear(d);while(!d->eos&&d->error.empty()){GstSample*s=gst_app_sink_try_pull_sample(d->sink,100*GST_MSECOND);if(s){d->current=s;GstCaps*c=gst_sample_get_caps(s);if(c&&gst_caps_get_size(c)){const GstStructure*st=gst_caps_get_structure(c,0);gst_structure_get_int(st,"rate",&d->rate);gst_structure_get_int(st,"channels",&d->channels);}GstBuffer*b=gst_sample_get_buffer(s);if(b&&GST_BUFFER_PTS_IS_VALID(b))d->pts_us=(int64_t)(GST_BUFFER_PTS(b)/GST_USECOND);return true;}check_bus(d);if(gst_app_sink_is_eos(d->sink))d->eos=true;}return false;}

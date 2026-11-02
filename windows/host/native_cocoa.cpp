@@ -19,6 +19,7 @@
 // presents nothing more, and still has to finish.
 
 #include "host_natives.h"
+#include "gstreamer_startup.h"
 
 #include <atomic>
 #include <cstdint>
@@ -879,6 +880,9 @@ void present_pixels(const uint32_t* argb, int w, int h) {
     if (frame == 1) {
         std::fprintf(stderr, "[win.apk] first frame presented (%dx%d)\n", w, h);
         std::fflush(stderr);
+        // Do not put GStreamer on the pre-frame critical path. Warm it only
+        // after the first frame has been handed to the presenter.
+        winapk::gstreamer_startup::warm_after_first_frame_async();
     }
     static const std::wstring path = [] {
         wchar_t buf[MAX_PATH * 4];

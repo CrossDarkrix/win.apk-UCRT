@@ -35,18 +35,26 @@ public class AudioManager {
     // below (real Android has it; FMOD/MCPE needs it for audio output). Protected sweep
     // must confirm Crossy/Unity still reach their menu.
 
-    public int  getStreamVolume(int streamType) {
+    public int getStreamVolume(int streamType) {
+        if (streamType == STREAM_MUSIC) {
+            int max = getStreamMaxVolume(streamType);
+            float value = com.macapk.loader.NativeAudio.nativeGetSessionVolume();
+            int index = Math.max(0, Math.min(max, Math.round(value * max)));
+            mStreamVolume[streamType] = index;
+            return index;
+        }
         if (streamType < 0 || streamType >= mStreamVolume.length) return 7;
         return mStreamVolume[streamType];
     }
-    public int  getStreamMaxVolume(int streamType) { return 15; }
+    public int getStreamMaxVolume(int streamType) { return 15; }
     public void setStreamVolume(int streamType, int index, int flags) {
         if (streamType < 0 || streamType >= mStreamVolume.length) return;
         int min = getStreamMinVolume(streamType);
         int max = getStreamMaxVolume(streamType);
-        if (index < min) index = min;
-        if (index > max) index = max;
-        mStreamVolume[streamType] = index;
+        int clamped = Math.max(min, Math.min(max, index));
+        mStreamVolume[streamType] = clamped;
+        if (streamType == STREAM_MUSIC)
+            com.macapk.loader.NativeAudio.nativeSetSessionVolume(max == 0 ? 0f : (float) clamped / (float) max);
     }
     // isMusicActive() stays hardcoded false: an honest answer needs to query
     // whether any Stream in audio_backend.mm's g_streams is PLAYSTATE_PLAYING
@@ -361,7 +369,13 @@ public class AudioManager {
     public int generateAudioSessionId() { return mSessionIds.incrementAndGet(); }
 
     public void adjustVolume(int direction, int flags) {}
-    public void adjustStreamVolume(int streamType, int direction, int flags) {}
+    public void adjustStreamVolume(int streamType, int direction, int flags) {
+        if (direction == ADJUST_MUTE) { if (streamType == STREAM_MUSIC) com.macapk.loader.NativeAudio.nativeSetSessionMute(true); return; }
+        if (direction == ADJUST_UNMUTE) { if (streamType == STREAM_MUSIC) com.macapk.loader.NativeAudio.nativeSetSessionMute(false); return; }
+        if (direction == ADJUST_TOGGLE_MUTE) { if (streamType == STREAM_MUSIC) com.macapk.loader.NativeAudio.nativeSetSessionMute(!com.macapk.loader.NativeAudio.nativeGetSessionMute()); return; }
+        int delta = direction == ADJUST_RAISE ? 1 : direction == ADJUST_LOWER ? -1 : 0;
+        setStreamVolume(streamType, getStreamVolume(streamType) + delta, flags);
+    }
     public void adjustSuggestedStreamVolume(int direction, int suggestedStreamType, int flags) {}
     public int getStreamMinVolume(int streamType) { return 0; }
     public boolean isStreamMute(int streamType) { return false; }

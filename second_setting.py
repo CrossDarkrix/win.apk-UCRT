@@ -156,11 +156,27 @@ rm -rf "$STAGE"
 # Overlay the ABI-matched UCRT64 executable, DLLs, GStreamer plugins and scanner.
 mkdir -p "$STAGE/bin" "$STAGE/lib/gstreamer-1.0" "$STAGE/libexec/gstreamer-1.0"
 cp -f "$PRIVATE/bin/winapk-runtime.exe" "$STAGE/bin/"
+cp -f "$PRIVATE/bin/gst-inspect-1.0.exe" "$STAGE/bin/"
 cp -f "$PRIVATE/bin"/*.dll "$STAGE/bin/"
 cp -f "$PRIVATE/lib/gstreamer-1.0"/*.dll "$STAGE/lib/gstreamer-1.0/"
 cp -f "$PRIVATE/libexec/gstreamer-1.0/gst-plugin-scanner.exe" \
       "$STAGE/libexec/gstreamer-1.0/"
-rm -f "$STAGE/gstreamer-registry.bin"
+
+# Pre-generate the registry against the FINAL staged paths. A cache copied from
+# PRIVATE would contain different plugin filenames and would be treated stale.
+REGISTRY="$STAGE/gstreamer-registry.bin"
+rm -f "$REGISTRY"
+env PATH="$STAGE/bin:/usr/bin" \
+    GST_PLUGIN_PATH="$STAGE/lib/gstreamer-1.0" \
+    GST_PLUGIN_SYSTEM_PATH="$STAGE/lib/gstreamer-1.0" \
+    GST_PLUGIN_SCANNER="$STAGE/libexec/gstreamer-1.0/gst-plugin-scanner.exe" \
+    GST_REGISTRY="$REGISTRY" \
+    GST_REGISTRY_REUSE_PLUGIN_SCANNER=no \
+    "$STAGE/bin/gst-inspect-1.0.exe" >/dev/null
+[[ -s "$REGISTRY" ]] || {
+  echo "[ERROR] Failed to pre-generate GStreamer registry: $REGISTRY" >&2
+  exit 7
+}
 
 [[ -f "$STAGE/lib/android-framework.jar" ]] || {
   echo "[ERROR] stage_runtime.sh did not create android-framework.jar" >&2

@@ -79,6 +79,16 @@ public:
         }
         return true;
     }
+    void set_session_volume(float value) {
+        requested_session_volume_.store(std::max(0.0f, std::min(1.0f, value)), std::memory_order_relaxed);
+        session_volume_dirty_.store(true, std::memory_order_release);
+    }
+    float session_volume() const { return observed_session_volume_.load(std::memory_order_acquire); }
+    void set_session_mute(bool muted) {
+        requested_session_mute_.store(muted, std::memory_order_relaxed);
+        session_mute_dirty_.store(true, std::memory_order_release);
+    }
+    bool session_mute() const { return observed_session_mute_.load(std::memory_order_acquire); }
     std::string endpoint() const {
         std::lock_guard<std::mutex> hold(route_lock_);
         return endpoint_id_;
@@ -128,6 +138,7 @@ private:
         Com<IMMDevice> device;
         Com<IAudioClient> client;
         Com<IAudioRenderClient> render;
+        Com<ISimpleAudioVolume> session_volume;
         WAVEFORMATEX* fmt = nullptr;
         HRESULT device_hr = E_FAIL;
         if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) {
@@ -160,16 +171,48 @@ private:
                         SUCCEEDED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                                                      400000 /* 40 ms */, 0, fmt, nullptr)) &&
                         SUCCEEDED(client->SetEventHandle(ready)) && SUCCEEDED(client->GetBufferSize(&buffer_frames)) &&
-                        SUCCEEDED(client->GetService(IID_PPV_ARGS(&render))) && SUCCEEDED(client->Start());
+                        SUCCEEDED(client->GetService(IID_PPV_ARGS(&render))) &&
+                        SUCCEEDED(client->GetService(__uuidof(ISimpleAudioVolume), reinterpret_cast<void**>(&session_volume))) &&
+                        SUCCEEDED(client->Start());
         rate_ = static_cast<int>(fmt->nSamplesPerSec);
         CoTaskMemFree(fmt);
         if (!ok) {
             CloseHandle(ready);
             return false;
         }
+        float initial_volume = 1.0f;
+        BOOL initial_mute = FALSE;
+        if (session_volume) {
+            if (SUCCEEDED(session_volume->GetMasterVolume(&initial_volume))) {
+                observed_session_volume_.store(initial_volume, std::memory_order_release);
+                requested_session_volume_.store(initial_volume, std::memory_order_relaxed);
+            }
+            if (SUCCEEDED(session_volume->GetMute(&initial_mute))) {
+                observed_session_mute_.store(initial_mute != FALSE, std::memory_order_release);
+                requested_session_mute_.store(initial_mute != FALSE, std::memory_order_relaxed);
+            }
+        }
         std::vector<float> mixbuf;
+        int session_poll_countdown = 0;
         for (;;) {
             WaitForSingleObject(ready, 200);
+            if (session_volume) {
+                if (session_volume_dirty_.exchange(false, std::memory_order_acq_rel)) {
+                    session_volume->SetMasterVolume(requested_session_volume_.load(std::memory_order_relaxed), nullptr);
+                }
+                if (session_mute_dirty_.exchange(false, std::memory_order_acq_rel)) {
+                    session_volume->SetMute(requested_session_mute_.load(std::memory_order_relaxed) ? TRUE : FALSE, nullptr);
+                }
+                if (--session_poll_countdown <= 0) {
+                    float value = 1.0f;
+                    BOOL muted = FALSE;
+                    if (SUCCEEDED(session_volume->GetMasterVolume(&value)))
+                        observed_session_volume_.store(value, std::memory_order_release);
+                    if (SUCCEEDED(session_volume->GetMute(&muted)))
+                        observed_session_mute_.store(muted != FALSE, std::memory_order_release);
+                    session_poll_countdown = 5;
+                }
+            }
             {
                 std::lock_guard<std::mutex> hold(route_lock_);
                 if (generation != route_generation_) {
@@ -217,6 +260,12 @@ private:
     mutable std::mutex route_lock_;
     std::string endpoint_id_;
     uint64_t route_generation_ = 0;
+    std::atomic<float> requested_session_volume_{1.0f};
+    std::atomic<float> observed_session_volume_{1.0f};
+    std::atomic<bool> requested_session_mute_{false};
+    std::atomic<bool> observed_session_mute_{false};
+    std::atomic<bool> session_volume_dirty_{false};
+    std::atomic<bool> session_mute_dirty_{false};
 };
 
 }  // namespace
@@ -228,6 +277,10 @@ bool set_output_endpoint(const std::string& endpoint_id) {
 std::string output_endpoint() {
     return Mixer::get().endpoint();
 }
+void set_session_volume(float volume) { Mixer::get().set_session_volume(volume); }
+float session_volume() { return Mixer::get().session_volume(); }
+void set_session_mute(bool muted) { Mixer::get().set_session_mute(muted); }
+bool session_mute() { return Mixer::get().session_mute(); }
 
 // ---- AudioTrack streams ------------------------------------------------------------------
 class Stream final : public Source {

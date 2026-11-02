@@ -2,6 +2,7 @@
 // Keeps ViewCanvasDriver compatibility while moving frame queueing, D3D11
 // upload and presentation off the Java draw thread.
 #include "gstreamer_present.h"
+#include "gstreamer_startup.h"
 #include "win32_window.h"
 
 #ifdef WINAPK_HAVE_GSTREAMER
@@ -50,8 +51,7 @@ void destroy_locked() {
 
 bool start_locked(int width, int height) {
     destroy_locked();
-    static std::once_flag init_once;
-    std::call_once(init_once, [] { gst_init(nullptr, nullptr); });
+    winapk::gstreamer_startup::ensure_initialized();
 
     GstElementFactory* d3d11_factory = gst_element_factory_find("d3d11videosink");
     if (!d3d11_factory) {
@@ -66,7 +66,7 @@ bool start_locked(int width, int height) {
         "appsrc name=winapk_src is-live=true do-timestamp=true format=time "
         "block=false max-buffers=2 ! "
         "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
-        "d3d11upload ! d3d11videosink name=winapk_sink sync=false force-aspect-ratio=true";
+        "d3d11upload ! d3d11videosink name=winapk_sink sync=false force-aspect-ratio=false";
     g.pipeline = gst_parse_launch(description, &error);
     if (!g.pipeline) {
         std::fprintf(stderr, "[win.apk] GStreamer pipeline failed: %s\n",
@@ -114,7 +114,7 @@ bool start_locked(int width, int height) {
     g.frame = 0;
     if (!g.logged) {
         std::fprintf(stderr,
-            "[win.apk] GStreamer presenter active: BGRA appsrc -> leaky queue -> d3d11upload -> d3d11videosink\n");
+            "[win.apk] GStreamer presenter active: full-client stretch, force-aspect-ratio=false\n");
         g.logged = true;
     }
     return true;

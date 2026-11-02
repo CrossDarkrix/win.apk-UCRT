@@ -403,21 +403,20 @@ public class AudioTrack implements AudioRouting, VolumeAutomation {
     /** @deprecated in AOSP since API 21; superseded by setVolume(float). */
     @Deprecated
     public int setStereoVolume(float left, float right) {
-        // AOSP (frameworks/base main, AudioTrack.java:2714-2717): "if (mState
-        // == STATE_UNINITIALIZED) { return ERROR_INVALID_OPERATION; }" before
-        // touching the volume state at all (see HONEST_OPEN above).
         if (honestUninitialized()) return ERROR_INVALID_OPERATION;
-        mBaseVolL = left; mBaseVolR = right;
+        if (left < 0.0f || left > 1.0f || right < 0.0f || right > 1.0f) return ERROR_BAD_VALUE;
+        float session = Math.max(left, right);
+        // Put common attenuation in the Windows session. Keep only stereo balance
+        // in the stream so equal L/R gain is not multiplied twice.
+        mBaseVolL = session > 0.0f ? left / session : 1.0f;
+        mBaseVolR = session > 0.0f ? right / session : 1.0f;
         pushVolume();
+        com.macapk.loader.NativeAudio.nativeSetSessionMute(session <= 0.0f);
+        com.macapk.loader.NativeAudio.nativeSetSessionVolume(session);
         return SUCCESS;
     }
     public int setVolume(float gain) {
-        // AOSP's setVolume(float) is "return setStereoVolume(gain, gain);"
-        // (:2746-2747), so it inherits the same STATE_UNINITIALIZED check.
-        if (honestUninitialized()) return ERROR_INVALID_OPERATION;
-        mBaseVolL = gain; mBaseVolR = gain;
-        pushVolume();
-        return SUCCESS;
+        return setStereoVolume(gain, gain);
     }
 
     public static int getMinBufferSize(int sampleRateInHz, int channelConfig, int audioFormat) {

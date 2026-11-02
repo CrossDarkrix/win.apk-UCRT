@@ -1,374 +1,202 @@
-# Win.apk
+# Win.apk (UCRT Edition)
 
-**Run Android apps on Windows 10 and 11 (x64), as ordinary Windows programs.**
+**AndroidアプリをWindows 10 / 11（x64）上で、通常のWindowsアプリのように実行するためのWin.apk UCRTカスタムエディションです。**
 
-[![Latest release](https://img.shields.io/github/v/release/israel2176/win.apk?include_prereleases&label=release&color=6c5ce7)](../../releases)
-[![Platform: Windows 10/11 x64](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078d4)](#requirements)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+> [!IMPORTANT]
+> Win.apk (UCRT Edition)は、MSYS2 UCRT64環境に統一し、Windows上での安定動作、起動時間、マルチメディア、ストレージ連携、実機互換性を重視して調整したカスタムビルドです。上流Win.apkとの互換性を保ちながら、UCRT向けのネイティブブリッジとWindows統合を追加しています。
 
-Win.apk installs Android apps (`.apk`, `.apkm`, `.xapk`, `.apks`) and runs each
-one in its own window, with its own icon in the Start menu. There is no
-emulator and no virtual machine: an app's Java code runs on a real Java VM,
-its x86_64 native libraries load directly into the process, and its graphics
-go through ANGLE on Direct3D 11.
+## 概要
 
-![The Win.apk library: a drop zone for installing apps above a grid of eight installed apps, with Calculator selected and running](docs/images/library.png)
+Win.apkは、`.apk`、`.apkm`、`.xapk`、`.apks`をインストールし、Androidアプリを個別のWindowsウィンドウで実行します。仮想マシンや一般的なAndroidエミュレーターを常駐させる方式ではなく、JavaコードはJava VM上で動作し、x86_64ネイティブライブラリはプロセスへ直接ロードされます。arm64-v8aライブラリにはx64向け変換経路があります。
 
-> **Early preview.** Many Java/Kotlin apps already run well; native-heavy apps
-> and games are partly there. Check [what works](#what-works) before you try.
+UCRT Editionでは、WindowsのUniversal C Runtimeを利用するUCRT64ツールチェーンへネイティブ依存関係を揃え、異なるABIやランタイムの混在を避ける構成にしています。
 
-## Contents
+## UCRT Editionの主な特徴
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Add an app](#add-an-app)
-- [The Store](#the-store)
-- [Open and manage apps](#open-and-manage-apps)
-- [Settings](#settings)
-- [Languages and right-to-left support](#languages-and-right-to-left-support)
-- [Logs and reporting a problem](#logs-and-reporting-a-problem)
-- [What works](#what-works)
-- [Where your data lives](#where-your-data-lives)
-- [Command line](#command-line)
-- [Build from source](#build-from-source)
-- [Repository layout](#repository-layout)
-- [Credits](#credits)
-- [License](#license)
+### UCRT64向け安定化
 
-## Features
+- MSYS2 **UCRT64**を正式なビルド環境として使用
+- UCRT64版GStreamer、プラグイン、スキャナー、ランタイムDLLを同一ABIで配置
+- MINGW64、CLANG64など、異なる環境の成果物を混在させない構成
+- ネイティブブリッジ、JNI、Windowsホスト処理を含めたUCRT64一貫ビルド
 
-- **One library for your Android apps.** Drop an APK on the window to install
-  it; every app gets a tile with its own icon, a Start menu shortcut and,
-  if you want, a desktop shortcut.
-- **A built-in store.** The Store tab lists the free and open-source apps on
-  [F-Droid](https://f-droid.org) that run here: search, pick a category,
-  click **Install**.
-- **Bundles too.** Split APKs as `.apkm`, `.xapk` and `.apks` install like a
-  plain `.apk`.
-- **Install progress you can see.** A window shows each app in the queue, how
-  long it has been converting, and its log as it is written.
-- **Per-app tools.** Get Info, update from a newer APK, reinstall, open the
-  app's files, remove it (what it saved stays).
-- **Live log viewer** for every install and run.
-- **Light and dark themes**, following Windows or set by hand.
-- **English, Japanese, and Hebrew**, with automatic Windows-language matching and a full right-to-left layout in Hebrew.
-- **Phone size and orientation** for apps, set once in the settings.
-- **Per-user install.** No administrator rights, nothing outside your user
-  profile.
+### GStreamerによる描画・メディア処理
 
-## Requirements
+- GStreamerの`appsrc`、D3D11アップロード、`d3d11videosink`を使用する非同期描画経路
+- GStreamer MediaExtractor PCMブリッジによる音声デコード経路
+- GStreamerレジストリキャッシュを最終配置先で事前生成
+- GStreamer初期化を最初のフレーム描画後に遅延し、起動時の白画面時間を短縮
+- GStreamerが使用できない場合はWin32描画経路へフォールバック
+- 全画面サイズプリセットで、縦横ともウィンドウのクライアント領域へストレッチフィット
 
-- Windows 10 or 11, 64-bit (x64). Windows on ARM is untested.
-- Disk space for Win.apk (it includes its own Java runtime and ANGLE) and for
-  the apps you install.
-- A GPU with Direct3D 11 is best. Without one, a software renderer takes over.
+グラフィックAPIについては、Android/OpenGL ES描画をANGLE経由でDirect3D 11へ接続し、最終フレームのWindows表示にはGStreamer D3D11プレゼンターまたはWin32フォールバックを使用します。
 
-Nothing else needs to be installed.
+### Windowsオーディオ統合
 
-## Install
+- Windowsの既定出力デバイスとアクティブなオーディオエンドポイントの列挙
+- Android側からの出力デバイス選択
+- `AudioTrack.setPreferredDevice()`相当の出力先切り替え
+- Windowsセッション音量との同期
+- AudioTrack、SoundPool、MediaPlayer向けのWindows音声経路
 
-1. Open the [Releases](../../releases) page and download `Win.apk-Setup.exe`
-   from the newest release.
-2. Run it. It installs for your user only, into
-   `%LOCALAPPDATA%\Programs\Win.apk`, and asks no administrator questions.
-   Tick **Put Win.apk on the desktop** if you want a desktop icon.
-3. Windows SmartScreen may say **"Windows protected your PC"**, because the
-   installer is not signed yet. Click **More info**, then **Run anyway**.
-4. Win.apk opens when setup finishes. Later, start it from the Start menu.
+### 音楽CD・光学ドライブ対応
 
-The installer also makes `.apk` files open with Win.apk, so double-clicking
-one in Explorer installs and opens it.
+- Windowsの光学ドライブをAndroid側へ公開するUCRT CDブリッジ
+- ドライブ列挙、オープン、TEST UNIT READY、INQUIRYに対応
+- READ TOCによるトラック情報取得
+- READ CDによるCD-DAセクター読み取り
+- 大きな読み取り要求を安全な単位へ分割するチャンク読み取り
+- Windows SCSI pass-throughを使用したコマンド転送
 
-**Portable:** prefer not to install? Download `Win.apk-windows-x64.zip`,
-unzip it anywhere, and start `Win.apk.exe` from that folder.
+光学ドライブやメディアの状態、ドライブ側の対応状況によって、利用可能な操作は異なります。
 
-**Uninstall:** Windows Settings → Apps → Installed apps → Win.apk →
-Uninstall. Your apps and their data stay in `%LOCALAPPDATA%\Win.apk`; delete
-that folder too to remove everything.
+### Windowsユーザーフォルダ連携
 
-## Add an app
+Android側の共有ストレージから、Windowsの既知のユーザーフォルダへアクセスできるようにマッピングします。
 
-Any of these installs an app:
+- Downloads
+- Pictures
+- Documents
+- Music
+- Videos（Android側ではMovies）
 
-- drag one or more APK files onto the Win.apk window;
-- click the drop zone, or the **Add app** tile, and choose the files;
-- double-click an `.apk` in Explorer.
+Windowsのファイルピッカー、URI許可、共有ストレージ層も利用できるため、対応アプリではWindows上のファイルを開く、保存する、読み込むといった操作が可能です。ネットワーク共有や異なるボリュームでは、Windows側の制約に応じて通常フォルダへフォールバックする場合があります。
 
-Win.apk keeps its own copy of the APK, so you can delete the download
-afterwards. The first install of an app converts its code for Windows, which
-takes up to a minute (more for very large apps); installs run one at a time.
-A window follows the progress:
+### Windowsとの統合
 
-| While it installs | When it is done |
+- APK、APKM、XAPK、APKSのインストール
+- アプリごとのウィンドウ、アイコン、スタートメニューショートカット
+- Windowsクリップボード
+- Windowsファイルピッカー
+- ゲームコントローラー
+- カメラ、マイク入力、写真ライブラリのホストブリッジ
+- WebView2ベースのWebView / ブラウザー連携
+- ライブ実行ログとインストールログ
+- 日本語、英語、ヘブライ語と右から左のUI
+- ライトテーマ、ダークテーマ
+
+## 画面サイズと表示
+
+ランチャーの画面サイズ設定には、1270 x 720のFit screenと複数の端末プリセットがあります。UCRT Editionでは、すべてのプリセットでアスペクト比を固定せず、ウィンドウの縦横全体へ描画をフィットさせます。
+
+- 左右・上下の黒帯を作らず、クライアント領域全体へ描画
+- ウィンドウのリサイズと最大化へ追従
+- マウス・タッチ座標と子ウィンドウも同じ全面矩形を使用
+- プリセット解像度はAndroidアプリが認識する内部描画解像度として維持
+
+## 対応状況
+
+### 対応している主な機能
+
+- Java / Kotlin Androidアプリ
+- x86_64ネイティブライブラリ
+- arm64-v8aネイティブライブラリのx64変換経路
+- JavaおよびネイティブコードからのOpenGL ES
+- AudioTrack、SoundPool、MediaPlayer系の音声
+- ファイル、SharedPreferences、SQLite、クリップボード
+- ファイルピッカー、ゲームコントローラー
+- Windowsユーザーフォルダ
+- 音楽CD読み取り
+
+### 制限事項
+
+- 32ビットARM専用アプリ（armeabi-v7a）は未対応
+- Google Play開発者サービスを前提とする機能は、アプリによって動作しない場合があります
+- Android実機固有のセンサー、DRM、認証、ハードウェア機能は完全互換ではありません
+- 本プロジェクトは開発中であり、アプリごとに互換性が異なります
+
+## 必要環境
+
+- Windows 10またはWindows 11、64ビット（x64）
+- Direct3D 11対応GPUを推奨
+- アプリ本体、Javaランタイム、GStreamer、ANGLE、インストールするアプリを格納できる空き容量
+
+## インストールと使い方
+
+1. リリースのインストーラー、またはポータブルZIPを入手します。
+2. インストーラー版はセットアップを実行します。ポータブル版は任意のフォルダへ展開します。
+3. `Win.apk.exe`を起動します。
+4. APKまたは対応するAPKバンドルをウィンドウへドロップするか、追加ボタンから選択します。
+5. インストール完了後、ライブラリのタイルからアプリを開きます。
+
+初回インストールではAndroidコードの変換や準備に時間がかかる場合があります。アプリの起動や動作に問題がある場合は、ランチャーのログビューアーで`last-run.log`とインストールログを確認してください。
+
+## データの保存先
+
+| 内容 | 保存先 |
 |---|---|
-| ![The install window: Reader converting, with the install log below](docs/images/install-progress.png) | ![The install window when the install finished: "Reader is ready", with an Open button](docs/images/install-done.png) |
+| Win.apk本体 | `%LOCALAPPDATA%\Programs\Win.apk`、またはポータブル版の展開先 |
+| インストール済みAPK | `%LOCALAPPDATA%\Win.apk\library` |
+| 変換済みコードとアプリ情報 | `%LOCALAPPDATA%\Win.apk\apps\<app>` |
+| Androidアプリの保存データ | `%LOCALAPPDATA%\Win.apk\android` |
+| ログ | `%LOCALAPPDATA%\Win.apk\logs` |
+| ストア情報 | `%LOCALAPPDATA%\Win.apk\store` |
+| 設定 | `HKEY_CURRENT_USER\Software\Win.apk` |
 
-You can hide the window at any time; the drop zone and the app's tile keep
-showing the progress.
+アプリを削除しても保存データを保持する操作があります。完全に削除する場合は、対象データの場所を確認してから削除してください。
 
-## The Store
+## ソースからのビルド
 
-The **Store** tab, next to **Library** at the top of the window (Ctrl+2;
-Ctrl+1 goes back), is [F-Droid](https://f-droid.org)'s catalog of free and
-open-source apps, usually Java-only and a good place to start. It lists the
-apps whose native code runs here (x86_64, or arm64 through translation),
-newest updates first; type to search, or pick a category.
+### 前提条件
 
-- **Install** downloads the app from f-droid.org, checks it against the
-  SHA-256 in F-Droid's index (a file that does not match is not installed)
-  and installs it like a dropped APK. The card shows the download and the
-  install; then its button says **Open**.
-- **Update** shows when F-Droid has a newer version of an app you have, by
-  package, however you installed it. What the app saved stays.
-- Click a card for its version, size, license and a link to its F-Droid page.
+- MSYS2
+- **MSYS2 UCRT64**シェル
+- Git、Make、CMake、Ninja
+- UCRT64 GCC / G++ツールチェーン
+- UCRT64 Clang
+- JDK
+- UCRT64版GStreamer開発環境
 
-The first time, the Store downloads F-Droid's index (about 15 MB) and keeps a
-summary of it; after that it opens at once and checks for new apps every few
-hours in the background (F5 checks now). Win.apk opens on the Store while the
-library is empty.
-
-## Open and manage apps
-
-- **Open an app:** double-click its tile, press Enter, or use its Start menu
-  or desktop shortcut. A dot under the tile shows it is running; **Stop** at
-  the bottom of the window closes it.
-- **In an app:** the mouse is your finger and the wheel scrolls. Android's
-  Back is **Escape**, **Alt+Left** or the mouse's back button. Closing the
-  window quits the app.
-- **Search:** just start typing in the library.
-- **Right-click an app** for: Open, Get Info, Create desktop shortcut, Show
-  the APK in Explorer, Open the app's files, Show the last log, Update from
-  APK, Reinstall and Remove.
-
-**Get Info** shows where the app and its files are, how big they are, and
-its install log, with the same actions:
-
-![The Get Info sheet for Reader: name, install date, the source APK and app files with their sizes, and the install log](docs/images/info.png)
-
-**Update from APK** installs a newer version over the old one and keeps the
-app's saved data. **Remove** deletes the app and its shortcuts but keeps what
-it saved, so installing it again picks up where it left off.
-
-Keyboard: arrow keys move between apps, **Enter** opens, **Delete** removes,
-**Ctrl+F** searches, **Ctrl+O** adds an app, **Ctrl+I** shows Get Info and
-**Ctrl+,** opens the settings.
-
-## Settings
-
-Click the gear at the top right.
-
-![The settings: theme, language, file types, screen size and orientation, and shortcuts](docs/images/settings.png)
-
-| Setting | What it does |
-|---|---|
-| **Theme** | Match Windows, Light or Dark |
-| **Language** | Match Windows, English, Japanese, or Hebrew |
-| **Open Android app files with Win.apk** | Makes Win.apk the default for `.apk`, `.apkm`, `.xapk` and `.apks` |
-| **Screen size** | The phone screen apps see, in dp. **Auto** fits the screen (360 × 800 or shorter) |
-| **Orientation** | Portrait or landscape |
-| **Desktop shortcut for new apps** | Every app gets a Start menu shortcut; this adds one on the desktop too |
-| **Shortcuts → Recreate** | Makes every app's Start menu shortcut again |
-| **Logs**, **App data** | Open the log viewer or the folders |
-| **Remove all apps** | Removes every app, keeping what they saved |
-
-Screen size and orientation apply the next time an app opens.
-
-The dark theme:
-
-![The library in the dark theme](docs/images/dark.png)
-
-## Languages and right-to-left support
-
-Win.apk supports English, Japanese, and Hebrew. With **Language → Match Windows**,
-the launcher follows the Windows display language when a supported translation
-is available. You can also select **English**, **日本語**, or **עברית** manually in
-Settings, and the choice is saved for future launches.
-
-Hebrew uses a complete right-to-left layout across the library, Settings,
-Get Info, installation windows, menus, and dialogs. Diagnostic logs remain
-left to right so that paths, stack traces, and technical output stay readable.
-
-## Logs and reporting a problem
-
-Click **Logs** at the bottom of the library to open the log viewer. It shows
-any of Win.apk's logs and follows the end as the runtime writes it:
-
-![The log viewer showing Reader's install log, with Copy, Notepad and Folder buttons](docs/images/logs.png)
-
-- `last-run.log` is the app opened most recently.
-- `install-<app>.log` is that app's install.
-
-If an app does not start or misbehaves, [open an issue](../../issues/new) with
-the app's name and version, what happened, and the log (**Copy** puts it on
-the clipboard). The most useful lines:
-
-| Line | Meaning |
-|---|---|
-| `native not implemented` | A Windows piece that is still missing |
-| `not implemented on Windows yet` | A system function the app's native code needs |
-| `Exception` or `FATAL` | The app crashed |
-
-## What works
-
-| Works | Not yet |
-|---|---|
-| Java/Kotlin apps, in their own window, with mouse, wheel and keyboard | Apps with 32-bit ARM native code only (`lib/armeabi-v7a`) |
-| OpenGL ES from Java (`GLSurfaceView`, libGDX) and from native code (SDL games) | `NativeActivity` games |
-| Apps that ship `lib/x86_64` native libraries | MediaPlayer, OpenSL ES and AAudio |
-| Apps with ARM native code only (`lib/arm64-v8a`), translated to x64 (below) | |
-| Sound from Java (AudioTrack, SoundPool: WAV, Ogg, MP3) | Video, camera, WebView, location |
-| Files, SharedPreferences, SQLite, clipboard, file pickers, game controllers | Google Play services (sign-in, purchases, maps) |
-
-Why the split: Android phones are ARM, while these PCs are x64. Java code
-and x86_64 libraries run directly. An app's 64-bit ARM libraries
-(`lib/arm64-v8a`) are translated to x64 in the background: `winapk-aot`
-turns each library into C and clang compiles it for your CPU
-(`<lib>.so.aot.dll`, next to the library), on all but one core. The app
-does not wait: it starts at once on an ARM JIT, which is slower, and each
-library switches to its translation as soon as it is ready, even while the
-app runs. Large libraries are translated only where the app's code actually
-ran, and more as you use the app. Translated code runs at close to native
-speed.
-Apps are installed with the ABIs `x86_64,arm64-v8a`, so an app's x86_64 build
-is used when it has one. 32-bit ARM (`armeabi-v7a`) is not supported.
-
-The translation uses clang, which comes with Win.apk (the `clang` folder,
-about 230 MB). To use another, set `WINAPK_AOT_CLANG` to its `clang.exe`;
-without the bundled one, Win.apk also looks on the PATH and for an LLVM or
-MSYS2 (`C:\msys64\clang64`) install.
-
-## Where your data lives
-
-| What | Where |
-|---|---|
-| Win.apk itself | `%LOCALAPPDATA%\Programs\Win.apk` (installer) or the folder you unzipped |
-| Installed apps (Win.apk's copy of each APK) | `%LOCALAPPDATA%\Win.apk\library` |
-| Each app's converted code, icon and name | `%LOCALAPPDATA%\Win.apk\apps\<app>` |
-| What the apps save | `%LOCALAPPDATA%\Win.apk\android` |
-| Logs | `%LOCALAPPDATA%\Win.apk\logs` |
-| The Store's catalog and icons | `%LOCALAPPDATA%\Win.apk\store` |
-| Settings | `HKEY_CURRENT_USER\Software\Win.apk` |
-| Start menu shortcuts | Start → Win.apk Apps |
-
-## Command line
-
-```bat
-Win.apk.exe                         :: the library
-Win.apk.exe app.apk                 :: install app.apk, then open it
-Win.apk.exe --run <library apk>     :: open an installed app (what its shortcuts do)
-```
-
-The runtime can also be run directly, for testing:
-
-```bat
-bin\winapk-runtime.exe --apk app.apk [--install-only] [--data <dir>] [--jdk <dir>] [--lib <dir>]
-```
-
-| Environment variable | Effect |
-|---|---|
-| `WINAPK_PHONE_SIZE=412x915` | The phone size in dp (the library's Screen size setting sets this) |
-| `WINAPK_HEADLESS=1` | Run without a window, for tests |
-| `WINAPK_HEADLESS_FRAME=frame.bmp` | Save the last frame the app drew |
-| `WINAPK_HEADLESS_EXIT_AFTER_FRAMES=30` | Exit that many frames after the first |
-
-## Build from source
-
-Win.apk can be built on Windows in the **MSYS2 UCRT64** environment. UCRT64
-uses the `/ucrt64` toolchain prefix and the Windows Universal C Runtime. Do not
-build the project from the plain MSYS shell, and do not mix libraries or build
-artifacts from another MSYS2 environment into the same build directory.
-
-### Prerequisites
-
-1. Install [MSYS2](https://www.msys2.org/).
-2. Open **MSYS2 UCRT64** from the Windows Start menu.
-3. Update MSYS2 and install the required build tools:
-
-```bash
-pacman -Syu
-pacman -S --needed   git   make   mingw-w64-ucrt-x86_64-toolchain   mingw-w64-ucrt-x86_64-clang   mingw-w64-ucrt-x86_64-cmake   mingw-w64-ucrt-x86_64-ninja
-```
-
-If `pacman -Syu` asks you to close the terminal, close it, reopen **MSYS2
-UCRT64**, and run `pacman -Syu` again before installing the remaining packages.
-A stock JDK must also be available to build the Java framework.
-
-Verify that the correct environment is active:
-
-```bash
-printf '%s\n' "$MSYSTEM"
-```
-
-The output must be:
-
-```text
-UCRT64
-```
-
-### Build
-
-From the repository root, run:
+### 基本ビルド
 
 ```bash
 ./build.sh
 ```
 
-`build.sh` is the supported entry point for a normal local build. It performs
-the project's native and Java build and staging steps and produces the runnable
-output. You do not need to invoke CMake manually for the standard build.
-
-If the executable bit was removed while unpacking or copying the repository,
-run the script explicitly through Bash:
+実行権限が失われている場合は次を使用します。
 
 ```bash
 bash build.sh
 ```
 
-Do not reuse a build directory created under **CLANG64**, **MINGW64**, or any
-other toolchain. Remove that old build directory first, then run `./build.sh`
-again from UCRT64.
+`MSYSTEM`は必ず`UCRT64`であることを確認してください。
 
-For lower-level build details, tests, CI behavior, and troubleshooting, see
-[windows/README.md](windows/README.md).
+```bash
+printf '%s\n' "$MSYSTEM"
+```
 
-**Releases** are made by running the **Windows release** workflow manually
-(Actions → Windows release → Run workflow) with a version tag such as
-`v0.2.0-preview`. The workflow builds on Windows, smoke-tests the package,
-builds the installer with Inno Setup, and publishes a pre-release. Nothing is
-released automatically.
+CLANG64、MINGW64など別環境で作成したビルドディレクトリやDLLを再利用しないでください。ABIの異なる成果物の混在は、起動失敗、プラグイン読み込み失敗、音声・描画ブリッジの不整合につながります。
 
-## Repository layout
+## 主な環境変数
 
-| Path | What it is |
+| 変数 | 内容 |
 |---|---|
-| `windows/` | Win.apk itself: the ELF loader and Bionic shim, the JNI bridge, the Windows host (window, input, ANGLE, audio), the runtime, the library app (`windows/launcher/`), the installer (`windows/package/`) and the tests |
-| `runtime/` | The Android framework in Java and shared native sources, from Mac.apk |
-| `scripts/build_framework_res.sh` | Builds the platform resource APK |
-| `docs/` | The images in this README |
-| `.github/workflows/` | Checks on pull requests, and the release workflow (run by hand) |
+| `WINAPK_PHONE_SIZE=1270x720` | Androidアプリが認識する画面サイズ |
+| `MACAPK_LETTERBOX=0` | アスペクト比固定を解除し、ウィンドウ全面へストレッチ |
+| `MACAPK_GSTREAMER_PRESENT=0` | GStreamerプレゼンターを無効化し、Win32経路を使用 |
+| `GST_PLUGIN_PATH` | GStreamerプラグインの探索先 |
+| `GST_PLUGIN_SYSTEM_PATH` | システムプラグイン探索先 |
+| `GST_PLUGIN_SCANNER` | GStreamerプラグインスキャナー |
+| `GST_REGISTRY` | 事前生成したGStreamerレジストリキャッシュ |
+| `WINAPK_HEADLESS=1` | ウィンドウなしでテスト実行 |
+| `WINAPK_HEADLESS_FRAME=frame.bmp` | 最終描画フレームを保存 |
 
-Design notes, findings and the milestone plan are in
-[`windows/PORTING.md`](windows/PORTING.md). Contributions are welcome: see
-[`CONTRIBUTING.md`](CONTRIBUTING.md). Security problems: see
-[`SECURITY.md`](SECURITY.md).
+## リポジトリ構成
 
-## Credits
+| パス | 内容 |
+|---|---|
+| `windows/` | Windowsホスト、JNI、ランチャー、パッケージ、テスト |
+| `windows/host/` | GStreamer、音声、CD、ユーザーフォルダ、入力などのWindowsブリッジ |
+| `runtime/` | Android Javaフレームワークと共通ネイティブコード |
+| `docs/` | 実装資料、検証記録、画像 |
+| `.github/workflows/` | Windowsビルド、互換性検査、リリース処理 |
 
-Win.apk started as a port of [Mac.apk](https://github.com/kksimp/Mac.apk) by
-Kaleb Simpson / Voltare, and its Android runtime (`runtime/`) comes from
-there. Win.apk is not affiliated with or endorsed by the Mac.apk project; the
-Mac.apk name and logo belong to their owners ([`TRADEMARKS.md`](TRADEMARKS.md)).
+## クレジット
 
-It also builds on [ANGLE](https://chromium.googlesource.com/angle/angle),
-[Eclipse Temurin](https://adoptium.net/) and the other components listed in
-[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).
+Win.apkは、Kaleb Simpson / VoltareによるMac.apkの移植を起点とし、Androidランタイムの一部を同プロジェクトから継承しています。本エディションはMac.apkプロジェクトから承認または推奨された製品ではありません。
 
-## License
+主な外部コンポーネントには、ANGLE、Eclipse Temurin、GStreamerなどがあります。詳細は`THIRD_PARTY_NOTICES.txt`を確認してください。
 
-[AGPL-3.0](LICENSE).
+## ライセンス
 
-
-## UCRT Windows CD support
-
-This build exposes Windows optical drives through android.hardware.usb as Bulk-Only Mass Storage devices. CBW commands are translated to Windows SCSI pass-through, including chunked READ CD. The existing Windows document picker and URI grant layer provide Windows file open/save access to guest Android apps.
+[AGPL-3.0](LICENSE)

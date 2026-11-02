@@ -681,7 +681,7 @@ struct PhonePreset {
 };
 
 const PhonePreset kPhonePresets[] = {
-    {L"Auto (fits the screen)", 0, 0},
+    {L"Fit screen 1270 x 720", 1270, 720},
     {L"320 × 480  (small, older apps)", 320, 480},
     {L"360 × 640  (5\" phone)", 360, 640},
     {L"360 × 780  (6.5\" phone)", 360, 780},
@@ -699,13 +699,21 @@ const PhonePreset kPhonePresets[] = {
 void apply_runtime_env() {
     const DWORD i = setting(L"PhoneSize", 0);
     const bool landscape = setting(L"Landscape", 0) != 0;
+    // Fit screen is a full 1270 x 720 render surface. It also disables
+    // letterboxing so every submitted source frame is scaled to the complete
+    // client area whenever the user resizes the window.
     if (i == 0 || i >= std::size(kPhonePresets)) {
-        if (landscape) SetEnvironmentVariableW(L"WINAPK_PHONE_SIZE", L"800x360");
+        SetEnvironmentVariableW(L"WINAPK_PHONE_SIZE", landscape ? L"720x1270" : L"1270x720");
+        SetEnvironmentVariableW(L"MACAPK_LETTERBOX", L"0");
         return;
     }
     int w = kPhonePresets[i].w, h = kPhonePresets[i].h;
     if (landscape) std::swap(w, h);
     SetEnvironmentVariableW(L"WINAPK_PHONE_SIZE", (std::to_wstring(w) + L"x" + std::to_wstring(h)).c_str());
+    // Every device preset uses full-client stretch fit. The selected
+    // preset still controls the guest render resolution, while presentation,
+    // pointer mapping, and child-window placement use the complete client area.
+    SetEnvironmentVariableW(L"MACAPK_LETTERBOX", L"0");
 }
 
 // ---------------------------------------------------------------------------

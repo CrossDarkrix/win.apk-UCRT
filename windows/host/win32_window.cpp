@@ -292,14 +292,15 @@ int client_x(HWND hwnd, int x) {
 // container and MacApkAspectFitRect; black is AOSP's letterbox background), so
 // a portrait app maximized is a phone in the middle of the screen, scaled to
 // its height. Mouse input and child windows (WebView) use the same rect.
-// MACAPK_LETTERBOX=0 stretches the frame over the whole client area again.
+// The launcher sets MACAPK_LETTERBOX=0 for every resolution preset, so every
+// full-resolution frame is scaled to the entire client area without preserving
+// aspect ratio. Mouse/touch mapping and child-window placement use the same rect.
 
 bool letterbox_enabled() {
-    static const bool on = [] {
-        const char* e = std::getenv("MACAPK_LETTERBOX");
-        return !(e && e[0] == '0');
-    }();
-    return on;
+    // All launcher presets are full-client stretch modes. Keep this disabled in
+    // the runtime too, so direct runtime launches and missing environment
+    // propagation cannot re-enable horizontal pillarboxing.
+    return false;
 }
 
 RECT phone_rect(const RECT& client) {

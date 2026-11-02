@@ -59,6 +59,12 @@ int stream_rate(Stream* s);
 // Returns only after the endpoint ID has been validated by MMDevice.
 bool set_output_endpoint(const std::string& endpoint_id);
 std::string output_endpoint();
+// Process WASAPI shared-session master volume. Set/get are thread-safe; COM access
+// remains on the mixer thread. Windows Sndvol changes are sampled by that thread.
+void set_session_volume(float volume);
+float session_volume();
+void set_session_mute(bool muted);
+bool session_mute();
 void stream_set_params(Stream* s, float speed, float pitch);
 void stream_params(Stream* s, float* speed, float* pitch);
 
