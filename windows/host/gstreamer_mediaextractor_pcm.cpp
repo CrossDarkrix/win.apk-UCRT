@@ -8,14 +8,152 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <map>
 #include <string>
 #include <vector>
 #ifdef WINAPK_HAVE_GSTREAMER
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
+#include <gst/pbutils/pbutils.h>
 #endif
 namespace {
 #ifdef WINAPK_HAVE_GSTREAMER
+struct Metadata {
+    std::map<std::string, std::string> values;
+    std::vector<unsigned char> picture;
+};
+
+static void merge_tags(GstTagList*& dst, const GstTagList* src) {
+    if (!src) return;
+    if (!dst) dst = gst_tag_list_copy(src);
+    else {
+        GstTagList* merged = gst_tag_list_merge(dst, src, GST_TAG_MERGE_PREPEND);
+        gst_tag_list_unref(dst);
+        dst = merged;
+    }
+}
+
+static std::string tag_string(const GstTagList* tags, const char* key) {
+    if (!tags || !key) return {};
+    gchar* value = nullptr;
+    if (!gst_tag_list_get_string(tags, key, &value) || !value) return {};
+    std::string out(value);
+    g_free(value);
+    return out;
+}
+
+static std::string tag_uint(const GstTagList* tags, const char* key) {
+    guint value = 0;
+    return tags && gst_tag_list_get_uint(tags, key, &value) ? std::to_string(value) : std::string();
+}
+
+static std::string tag_date(const GstTagList* tags) {
+    GstDateTime* dt = nullptr;
+    if (tags && gst_tag_list_get_date_time(tags, GST_TAG_DATE_TIME, &dt) && dt) {
+        gchar* text = gst_date_time_to_iso8601_string(dt);
+        std::string out = text ? text : "";
+        g_free(text);
+        gst_date_time_unref(dt);
+        return out;
+    }
+    GDate* date = nullptr;
+    if (tags && gst_tag_list_get_date(tags, GST_TAG_DATE, &date) && date) {
+        char text[32] = {};
+        g_date_strftime(text, sizeof(text), "%Y-%m-%d", date);
+        g_date_free(date);
+        return text;
+    }
+    return {};
+}
+
+static void copy_picture(const GstTagList* tags, Metadata* out) {
+    if (!tags || !out || !out->picture.empty()) return;
+    GstSample* sample = nullptr;
+    if (!gst_tag_list_get_sample(tags, GST_TAG_IMAGE, &sample) || !sample)
+        gst_tag_list_get_sample(tags, GST_TAG_PREVIEW_IMAGE, &sample);
+    if (!sample) return;
+    GstBuffer* buffer = gst_sample_get_buffer(sample);
+    GstMapInfo map{};
+    if (buffer && gst_buffer_map(buffer, &map, GST_MAP_READ)) {
+        out->picture.assign(map.data, map.data + map.size);
+        gst_buffer_unmap(buffer, &map);
+    }
+    gst_sample_unref(sample);
+}
+
+static void collect_stream_tags(GstDiscovererInfo* info, GstTagList*& tags, Metadata* out) {
+    GList* streams = gst_discoverer_info_get_stream_list(info);
+    for (GList* it = streams; it; it = it->next) {
+        auto* stream = static_cast<GstDiscovererStreamInfo*>(it->data);
+        const GstTagList* stream_tags = gst_discoverer_stream_info_get_tags(stream);
+        merge_tags(tags, stream_tags);
+        copy_picture(stream_tags, out);
+        gst_discoverer_stream_info_unref(stream);
+    }
+    g_list_free(streams);
+}
+
+static Metadata* discover_metadata(const char* path) {
+    if (!path || !*path) return nullptr;
+    gst_init(nullptr, nullptr);
+    GError* error = nullptr;
+    gchar* uri = gst_filename_to_uri(path, &error);
+    if (!uri) {
+        if (error) g_error_free(error);
+        return nullptr;
+    }
+    GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+    if (!discoverer) {
+        if (error) g_error_free(error);
+        g_free(uri);
+        return nullptr;
+    }
+    GstDiscovererInfo* info = gst_discoverer_discover_uri(discoverer, uri, &error);
+    g_free(uri);
+    if (error) g_error_free(error);
+    if (!info) { g_object_unref(discoverer); return nullptr; }
+    auto* out = new Metadata();
+    GstTagList* tags = nullptr;
+    const GstTagList* global = gst_discoverer_info_get_tags(info);
+    merge_tags(tags, global);
+    copy_picture(global, out);
+    collect_stream_tags(info, tags, out);
+    const struct { const char* android; const char* gst; } string_tags[] = {
+        {"title", GST_TAG_TITLE}, {"artist", GST_TAG_ARTIST}, {"album", GST_TAG_ALBUM},
+        {"album-artist", GST_TAG_ALBUM_ARTIST}, {"author", GST_TAG_ARTIST},
+        {"composer", GST_TAG_COMPOSER}, {"genre", GST_TAG_GENRE},
+        {"comment", GST_TAG_COMMENT}, {"copyright", GST_TAG_COPYRIGHT},
+        {"writer", GST_TAG_COMPOSER}, {"encoder", GST_TAG_ENCODER},
+        {"audio-codec", GST_TAG_AUDIO_CODEC}, {"container-format", GST_TAG_CONTAINER_FORMAT}
+    };
+    for (const auto& item : string_tags) {
+        std::string value = tag_string(tags, item.gst);
+        if (!value.empty()) out->values[item.android] = value;
+    }
+    const struct { const char* android; const char* gst; } uint_tags[] = {
+        {"track-number", GST_TAG_TRACK_NUMBER}, {"track-count", GST_TAG_TRACK_COUNT},
+        {"disc-number", GST_TAG_ALBUM_VOLUME_NUMBER}, {"disc-count", GST_TAG_ALBUM_VOLUME_COUNT},
+        {"bitrate", GST_TAG_BITRATE}, {"nominal-bitrate", GST_TAG_NOMINAL_BITRATE}
+    };
+    for (const auto& item : uint_tags) {
+        std::string value = tag_uint(tags, item.gst);
+        if (!value.empty()) out->values[item.android] = value;
+    }
+    std::string date = tag_date(tags);
+    if (!date.empty()) {
+        out->values["date"] = date;
+        if (date.size() >= 4) out->values["year"] = date.substr(0, 4);
+    }
+    GstClockTime duration = gst_discoverer_info_get_duration(info);
+    if (GST_CLOCK_TIME_IS_VALID(duration))
+        out->values["duration-ms"] = std::to_string(duration / GST_MSECOND);
+    out->values["has-picture"] = out->picture.empty() ? "no" : "yes";
+    if (tags) gst_tag_list_unref(tags);
+    gst_discoverer_info_unref(info);
+    g_object_unref(discoverer);
+    return out;
+}
+
 struct Demux { std::mutex lock; GstElement* pipeline=nullptr; GstAppSink* sink=nullptr; GstSample* current=nullptr; int rate=0,channels=0; int64_t duration_us=-1,pts_us=-1,mp3_duration_us=-1; bool eos=false; std::string error; };
 struct Pass { int rate=0, channels=0; };
 struct Mp3FrameInfo { int sample_rate=0; int samples=0; int frame_bytes=0; };
@@ -126,6 +264,40 @@ return h?((Pass*)h)->channels:0;
 return 0;
 #endif
 }
+JNIEXPORT jlong JNICALL Java_com_macapk_loader_NativeMedia_nativeMetadataOpen(JNIEnv* env,jclass,jstring path){
+#ifdef WINAPK_HAVE_GSTREAMER
+const char* p=path?env->GetStringUTFChars(path,nullptr):nullptr;
+Metadata* m=p?discover_metadata(p):nullptr;
+if(p)env->ReleaseStringUTFChars(path,p);
+return reinterpret_cast<jlong>(m);
+#else
+(void)env;(void)path;return 0;
+#endif
+}
+JNIEXPORT jstring JNICALL Java_com_macapk_loader_NativeMedia_nativeMetadataGetString(JNIEnv* env,jclass,jlong h,jstring key){
+#ifdef WINAPK_HAVE_GSTREAMER
+if(!h||!key)return nullptr;const char*k=env->GetStringUTFChars(key,nullptr);if(!k)return nullptr;
+auto*m=reinterpret_cast<Metadata*>(h);auto it=m->values.find(k);env->ReleaseStringUTFChars(key,k);
+return it==m->values.end()?nullptr:env->NewStringUTF(it->second.c_str());
+#else
+(void)env;(void)h;(void)key;return nullptr;
+#endif
+}
+JNIEXPORT jbyteArray JNICALL Java_com_macapk_loader_NativeMedia_nativeMetadataGetPicture(JNIEnv* env,jclass,jlong h){
+#ifdef WINAPK_HAVE_GSTREAMER
+if(!h)return nullptr;auto*m=reinterpret_cast<Metadata*>(h);if(m->picture.empty())return nullptr;
+jbyteArray out=env->NewByteArray(static_cast<jsize>(m->picture.size()));if(out)env->SetByteArrayRegion(out,0,static_cast<jsize>(m->picture.size()),reinterpret_cast<const jbyte*>(m->picture.data()));return out;
+#else
+(void)env;(void)h;return nullptr;
+#endif
+}
+JNIEXPORT void JNICALL Java_com_macapk_loader_NativeMedia_nativeMetadataClose(JNIEnv*,jclass,jlong h){
+#ifdef WINAPK_HAVE_GSTREAMER
+delete reinterpret_cast<Metadata*>(h);
+#else
+(void)h;
+#endif
+}
 JNIEXPORT void JNICALL Java_com_macapk_loader_NativeMedia_nativeDecClose(JNIEnv*,jclass,jlong h){
 #ifdef WINAPK_HAVE_GSTREAMER
 delete (Pass*)h;
@@ -152,6 +324,10 @@ const HostMethod kNativeMediaMethods[] = {
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDemuxAdvance", "(J)I", Java_com_macapk_loader_NativeMedia_nativeDemuxAdvance),
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDemuxSeek", "(JJ)V", Java_com_macapk_loader_NativeMedia_nativeDemuxSeek),
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDemuxClose", "(J)V", Java_com_macapk_loader_NativeMedia_nativeDemuxClose),
+    WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeMetadataOpen", "(Ljava/lang/String;)J", Java_com_macapk_loader_NativeMedia_nativeMetadataOpen),
+    WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeMetadataGetString", "(JLjava/lang/String;)Ljava/lang/String;", Java_com_macapk_loader_NativeMedia_nativeMetadataGetString),
+    WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeMetadataGetPicture", "(J)[B", Java_com_macapk_loader_NativeMedia_nativeMetadataGetPicture),
+    WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeMetadataClose", "(J)V", Java_com_macapk_loader_NativeMedia_nativeMetadataClose),
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDecOpen", "(III[B)J", Java_com_macapk_loader_NativeMedia_nativeDecOpen),
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDecDecode", "(J[BZ)[B", Java_com_macapk_loader_NativeMedia_nativeDecDecode),
     WINAPK_HOST_NATIVE(kNativeMediaClass, "nativeDecOutSampleRate", "(J)I", Java_com_macapk_loader_NativeMedia_nativeDecOutSampleRate),

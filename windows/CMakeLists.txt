@@ -236,7 +236,7 @@ if(WINAPK_JNI_INCLUDE)
   find_package(PkgConfig QUIET)
   if(PkgConfig_FOUND)
     pkg_check_modules(WINAPK_GSTREAMER QUIET IMPORTED_TARGET
-      gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
+      gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0 gstreamer-pbutils-1.0)
   endif()
   if(WINAPK_GSTREAMER_FOUND)
     target_compile_definitions(winapk-runtime PRIVATE WINAPK_HAVE_GSTREAMER=1)
