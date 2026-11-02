@@ -5,6 +5,11 @@
 > [!IMPORTANT]
 > Win.apk (UCRT Edition)は、MSYS2 UCRT64環境に統一し、Windows上での安定動作、起動時間、マルチメディア、ストレージ連携、実機互換性を重視して調整したカスタムビルドです。上流Win.apkとの互換性を保ちながら、UCRT向けのネイティブブリッジとWindows統合を追加しています。
 
+---
+[English](README_EN.md)
+
+---
+
 ## 概要
 
 Win.apkは、`.apk`、`.apkm`、`.xapk`、`.apks`をインストールし、Androidアプリを個別のWindowsウィンドウで実行します。仮想マシンや一般的なAndroidエミュレーターを常駐させる方式ではなく、JavaコードはJava VM上で動作し、x86_64ネイティブライブラリはプロセスへ直接ロードされます。arm64-v8aライブラリにはx64向け変換経路があります。
