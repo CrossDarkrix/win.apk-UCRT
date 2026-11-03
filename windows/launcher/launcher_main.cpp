@@ -697,6 +697,15 @@ const PhonePreset kPhonePresets[] = {
 // here (it inherits this process's environment). "Auto" leaves whatever
 // WINAPK_PHONE_SIZE the user set themselves.
 void apply_runtime_env() {
+    // UCRT Edition compatibility policy: declared runtime permissions are
+    // granted without opening the Android permission helper. This covers media,
+    // shared-file access and notifications; INTERNET is a normal install-time
+    // permission and already needs no runtime prompt. Set either variable to 1
+    // before launching to restore the interactive storage permission flow.
+    SetEnvironmentVariableW(L"MACAPK_MEDIA_PERMS_ASK", L"0");
+    SetEnvironmentVariableW(L"MACAPK_ALLFILES_HONEST", L"0");
+    SetEnvironmentVariableW(L"WINAPK_UCRT_AUTO_PERMISSIONS", L"1");
+
     const DWORD i = setting(L"PhoneSize", 0);
     const bool landscape = setting(L"Landscape", 0) != 0;
     // Fit screen is a full 1270 x 720 render surface. It also disables
